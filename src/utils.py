@@ -139,7 +139,7 @@ def compute_morphology_cost_matrix(
         # Get pre-loaded GPU data for spot A
         cells_A_gpu = morph_A_gpu[spot_key_A]
         centroids_A_gpu = centroid_A_gpu[spot_key_A]
-        a_dist_gpu = a_dist_gpu[spot_key_A]
+        a_dist = a_dist_gpu[spot_key_A]
         n_cells_A = cells_A_gpu.shape[0]
             
         for j in range(n_spots_B):
@@ -153,7 +153,7 @@ def compute_morphology_cost_matrix(
             # Get pre-loaded GPU data for spot B
             cells_B_gpu = morph_B_gpu[spot_key_B]
             centroids_B_gpu = centroid_B_gpu[spot_key_B]
-            b_dist_gpu = b_dist_gpu[spot_key_B]
+            b_dist = b_dist_gpu[spot_key_B]
             n_cells_B = cells_B_gpu.shape[0]
             
             # Compute OT cost (all data already on GPU - no transfers needed!)
@@ -183,7 +183,7 @@ def compute_morphology_cost_matrix(
                         M_cell_morph,     # Morphology feature cost
                         D_cell_A,         # Spatial structure within spot i
                         D_cell_B,         # Spatial structure within spot j
-                        a_dist_gpu, b_dist_gpu,
+                        a_dist, b_dist,
                         loss_fun='square_loss',
                         alpha=alpha_cell_spatial,  # Balance features vs spatial
                         log=False
@@ -199,7 +199,7 @@ def compute_morphology_cost_matrix(
                     # Fallback to simple EMD if FGW fails (e.g., single cell)
                     if verbose:
                         print(f"FGW failed for spot pair ({i},{j}), using EMD fallback: {e}")
-                    cost = ot.emd2(a_dist_gpu, b_dist_gpu, M_cell_morph)
+                    cost = ot.emd2(a_dist, b_dist, M_cell_morph)
                     if hasattr(cost, 'item'):
                         cost = cost.item()
                     else:
