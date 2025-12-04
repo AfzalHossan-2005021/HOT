@@ -61,163 +61,149 @@ def compute_morphology_cost_matrix(
     """
     Computes cell morphology dissimilarity cost matrix between spots using Fused Gromov-Wasserstein.
     
-    For each pair of spots (i, j):
-    - Extracts cells assigned to spot i in slice A and spot j in slice B
-    - Uses cell morphology features (16D) and cell centroids (2D spatial positions)
-    - Computes Fused GW cost that preserves both:
-      * Morphological similarity between cells
-      * Spatial arrangement of cells within spots
-    - Handles spots with no cells using a large penalty value
-    
     Args:
         sliceA: First slice with cell_morphology and cell_centroids in uns
         sliceB: Second slice with cell_morphology and cell_centroids in uns
-        nx: POT backend
+        nx: POT backend (TorchBackend or NumpyBackend)
         use_gpu: If True, uses GPU for computation
         alpha_cell_spatial: Weight for cell spatial structure (0=morphology only, 1=spatial only)
-        verbose: If True, prints progress
+        verbose: If True, prints detailed progress information
         
     Returns:
-        M_morph: Morphology+spatial cost matrix (n_spots_A x n_spots_B)
+        M_morph: Cost matrix (n_spots_A x n_spots_B) combining morphology and spatial costs
     """
     print("Computing cell-level Fused Gromov-Wasserstein cost matrix...")
-    print(f"  alpha_cell_spatial = {alpha_cell_spatial:.2f} (morphology weight: {1-alpha_cell_spatial:.2f})")
+    print(f"  alpha_cell_spatial = {alpha_cell_spatial:.2f} (morphology: {1-alpha_cell_spatial:.2f}, spatial: {alpha_cell_spatial:.2f})")
     
-    n_spots_A = sliceA.shape[0]
-    n_spots_B = sliceB.shape[0]
+    n_spots_A, n_spots_B = sliceA.shape[0], sliceB.shape[0]
     
-    # Extract morphology and centroid data
-    morph_A = sliceA.uns['cell_morphology']
-    morph_B = sliceB.uns['cell_morphology']
-    centroid_A = sliceA.uns['cell_centroids']
-    centroid_B = sliceB.uns['cell_centroids']
+    # Load cell data to GPU
+    gpu_data_A = _preload_cell_data_to_gpu(sliceA.uns['cell_morphology'], 
+                                           sliceA.uns['cell_centroids'], 
+                                           n_spots_A, nx, use_gpu)
+    gpu_data_B = _preload_cell_data_to_gpu(sliceB.uns['cell_morphology'], 
+                                           sliceB.uns['cell_centroids'], 
+                                           n_spots_B, nx, use_gpu)
     
-    # Pre-load all data to GPU for efficiency (avoid repeated CPU-GPU transfers)
+    print(f"  Loaded {len(gpu_data_A['morph'])} spots from A and {len(gpu_data_B['morph'])} spots from B to GPU")
+    
+    # Compute costs for spot pairs with cells
+    M_morph_gpu, valid_mask = _compute_spot_pair_costs(
+        gpu_data_A, gpu_data_B, n_spots_A, n_spots_B, 
+        alpha_cell_spatial, nx, use_gpu, verbose
+    )
+    
+    # Convert to numpy and apply penalty for spots without cells
+    M_morph = _finalize_cost_matrix(M_morph_gpu, valid_mask, n_spots_A, n_spots_B, nx, verbose)
+    
+    # Return as backend array
+    M_morph = to_backend_array(M_morph, nx, use_gpu=use_gpu)
+    print("Cell-level FGW cost matrix computation complete!")
+    return M_morph
+
+
+def _preload_cell_data_to_gpu(morph_dict, centroid_dict, n_spots, nx, use_gpu):
+    """Pre-loads cell morphology and spatial data to GPU."""
     print("  Pre-loading cell data to GPU...")
-    morph_A_gpu = {}
-    morph_B_gpu = {}
-    centroid_A_gpu = {}
-    centroid_B_gpu = {}
-    a_dist_gpu = {}
-    b_dist_gpu = {}
-    D_cell_A_gpu = {}  # Pre-computed distance matrices
-    D_cell_B_gpu = {}
     
-    for i in range(n_spots_A):
+    gpu_data = {
+        'morph': {},
+        'centroid': {},
+        'dist': {},
+        'D_spatial': {}
+    }
+    
+    for i in range(n_spots):
         spot_key = str(i)
-        if spot_key in morph_A and len(morph_A[spot_key]) > 0:
-            morph_A_gpu[spot_key] = to_backend_array(morph_A[spot_key], nx, use_gpu=use_gpu)
-            centroids = to_backend_array(centroid_A[spot_key], nx, use_gpu=use_gpu)
-            centroid_A_gpu[spot_key] = centroids
-            n_cells = morph_A[spot_key].shape[0]
-            a_dist_gpu[spot_key] = to_backend_array(np.ones(n_cells) / n_cells, nx, use_gpu=use_gpu)
+        if spot_key not in morph_dict or len(morph_dict[spot_key]) == 0:
+            continue
             
-            # Pre-compute and normalize spatial distance matrix
-            D = ot.dist(centroids, centroids, metric='euclidean')
-            if n_cells > 1:
-                min_dist = nx.min(D[D > 0])
-                if min_dist > 0:
-                    D = D / min_dist
-            D_cell_A_gpu[spot_key] = D
+        # Load morphology features
+        gpu_data['morph'][spot_key] = to_backend_array(morph_dict[spot_key], nx, use_gpu=use_gpu)
+        
+        # Load and process centroids
+        centroids = to_backend_array(centroid_dict[spot_key], nx, use_gpu=use_gpu)
+        gpu_data['centroid'][spot_key] = centroids
+        
+        # Create uniform distribution over cells
+        n_cells = morph_dict[spot_key].shape[0]
+        gpu_data['dist'][spot_key] = to_backend_array(np.ones(n_cells) / n_cells, nx, use_gpu=use_gpu)
+        
+        # Pre-compute normalized spatial distance matrix
+        D = ot.dist(centroids, centroids, metric='euclidean')
+        if n_cells > 1:
+            min_dist = nx.min(D[D > 0])
+            if min_dist > 0:
+                D = D / min_dist
+        gpu_data['D_spatial'][spot_key] = D
     
-    for j in range(n_spots_B):
-        spot_key = str(j)
-        if spot_key in morph_B and len(morph_B[spot_key]) > 0:
-            morph_B_gpu[spot_key] = to_backend_array(morph_B[spot_key], nx, use_gpu=use_gpu)
-            centroids = to_backend_array(centroid_B[spot_key], nx, use_gpu=use_gpu)
-            centroid_B_gpu[spot_key] = centroids
-            n_cells = morph_B[spot_key].shape[0]
-            b_dist_gpu[spot_key] = to_backend_array(np.ones(n_cells) / n_cells, nx, use_gpu=use_gpu)
-            
-            # Pre-compute and normalize spatial distance matrix
-            D = ot.dist(centroids, centroids, metric='euclidean')
-            if n_cells > 1:
-                min_dist = nx.min(D[D > 0])
-                if min_dist > 0:
-                    D = D / min_dist
-            D_cell_B_gpu[spot_key] = D
+    return gpu_data
+
+
+def _compute_spot_pair_costs(gpu_data_A, gpu_data_B, n_spots_A, n_spots_B, 
+                             alpha_cell_spatial, nx, use_gpu, verbose):
+    """Computes FGW costs for all spot pairs with cells."""
+    spots_A = list(gpu_data_A['morph'].keys())
+    spots_B = list(gpu_data_B['morph'].keys())
+    n_valid_pairs = len(spots_A) * len(spots_B)
     
-    print(f"  Loaded {len(morph_A_gpu)} spots from A and {len(morph_B_gpu)} spots from B to GPU")
+    print(f"  Computing costs for {n_valid_pairs:,} spot pairs (only spots with cells)")
     
-    # Initialize cost matrix on GPU for better performance
     M_morph_gpu = to_backend_array(np.zeros((n_spots_A, n_spots_B)), nx, use_gpu=use_gpu)
-    
-    # Track which entries are valid (have cells)
     valid_mask = np.zeros((n_spots_A, n_spots_B), dtype=bool)
     
-    # First pass: compute costs for spots with cells
-    for i in tqdm(range(n_spots_A), desc="Computing cell-level FGW costs"):
-        spot_key_A = str(i)
+    for spot_key_A in tqdm(spots_A, desc="Computing cell-level FGW costs"):
+        i = int(spot_key_A)
+        cells_A = gpu_data_A['morph'][spot_key_A]
+        dist_A = gpu_data_A['dist'][spot_key_A]
+        D_spatial_A = gpu_data_A['D_spatial'][spot_key_A]
         
-        # Check if spot i has cells (data already on GPU)
-        if spot_key_A not in morph_A_gpu:
-            continue
-        
-        # Get pre-loaded GPU data for spot A
-        cells_A_gpu = morph_A_gpu[spot_key_A]
-        a_dist = a_dist_gpu[spot_key_A]
-        D_cell_A = D_cell_A_gpu[spot_key_A]  # Pre-computed and normalized
+        for spot_key_B in spots_B:
+            j = int(spot_key_B)
+            cells_B = gpu_data_B['morph'][spot_key_B]
+            dist_B = gpu_data_B['dist'][spot_key_B]
+            D_spatial_B = gpu_data_B['D_spatial'][spot_key_B]
             
-        for j in range(n_spots_B):
-            spot_key_B = str(j)
+            # Compute morphology dissimilarity
+            M_cell_morph = ot.dist(cells_A, cells_B, metric='euclidean')
             
-            # Check if spot j has cells (data already on GPU)
-            if spot_key_B not in morph_B_gpu:
-                continue
-            
-            # Get pre-loaded GPU data for spot B
-            cells_B_gpu = morph_B_gpu[spot_key_B]
-            b_dist = b_dist_gpu[spot_key_B]
-            D_cell_B = D_cell_B_gpu[spot_key_B]  # Pre-computed and normalized
-            
-            # Morphology dissimilarity (all on GPU)
-            M_cell_morph = ot.dist(cells_A_gpu, cells_B_gpu, metric='euclidean')
-            
-            # Fused Gromov-Wasserstein for cells within this spot pair
+            # Compute FGW cost (combines morphology + spatial structure)
             try:
                 cost = ot.gromov.fused_gromov_wasserstein2(
-                    M_cell_morph,     # Morphology feature cost
-                    D_cell_A,         # Spatial structure within spot i (pre-computed)
-                    D_cell_B,         # Spatial structure within spot j (pre-computed)
-                    a_dist, b_dist,
+                    M_cell_morph, D_spatial_A, D_spatial_B,
+                    dist_A, dist_B,
                     loss_fun='square_loss',
-                    alpha=alpha_cell_spatial,  # Balance features vs spatial
+                    alpha=alpha_cell_spatial,
                     log=False
                 )
-                valid_mask[i, j] = True
             except Exception as e:
-                # Fallback to simple EMD if FGW fails (e.g., single cell)
                 if verbose:
                     print(f"FGW failed for spot pair ({i},{j}), using EMD fallback: {e}")
-                cost = ot.emd2(a_dist, b_dist, M_cell_morph)
-                valid_mask[i, j] = True
+                cost = ot.emd2(dist_A, dist_B, M_cell_morph)
             
-            # Store on GPU (avoid individual transfers)
             M_morph_gpu[i, j] = cost
+            valid_mask[i, j] = True
     
-    # Convert to numpy once (single GPU->CPU transfer)
+    return M_morph_gpu, valid_mask
+
+
+def _finalize_cost_matrix(M_morph_gpu, valid_mask, n_spots_A, n_spots_B, nx, verbose):
+    """Converts GPU matrix to numpy and applies penalty for invalid entries."""
     M_morph = nx.to_numpy(M_morph_gpu)
     
-    # Compute penalty and fill invalid entries
+    # Apply penalty for spots without cells
     valid_costs = M_morph[valid_mask]
-    if len(valid_costs) > 0:
-        penalty = np.max(valid_costs) * 10  # 10x maximum valid cost
-    else:
-        penalty = 1000.0  # fallback if no valid costs
-    
+    penalty = np.max(valid_costs) * 10 if len(valid_costs) > 0 else 1000.0
     M_morph[~valid_mask] = penalty
     
     if verbose:
         print(f"Cell-level FGW cost matrix computed:")
         print(f"  Shape: {M_morph.shape}")
         print(f"  Valid costs: {np.sum(valid_mask)}/{n_spots_A * n_spots_B}")
-        print(f"  Cost range: [{np.min(valid_costs):.4f}, {np.max(valid_costs):.4f}]")
+        if len(valid_costs) > 0:
+            print(f"  Cost range: [{np.min(valid_costs):.4f}, {np.max(valid_costs):.4f}]")
         print(f"  Penalty value: {penalty:.4f}")
     
-    # Convert back to backend array
-    M_morph = to_backend_array(M_morph, nx, use_gpu=use_gpu)
-    
-    print("Cell-level FGW cost matrix computation complete!")
     return M_morph
 
 
