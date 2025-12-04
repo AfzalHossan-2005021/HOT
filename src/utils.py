@@ -127,18 +127,30 @@ def compute_morphology_cost_matrix(
             
             # Compute OT cost if both spots have cells
             if cells_A is not None and cells_B is not None:
+                # Convert to backend arrays for GPU acceleration
+                cells_A_gpu = to_backend_array(cells_A, nx, use_gpu=use_gpu)
+                cells_B_gpu = to_backend_array(cells_B, nx, use_gpu=use_gpu)
+                centroids_A_gpu = to_backend_array(centroids_A, nx, use_gpu=use_gpu)
+                centroids_B_gpu = to_backend_array(centroids_B, nx, use_gpu=use_gpu)
+                a_dist_gpu = to_backend_array(a_dist, nx, use_gpu=use_gpu)
+                b_dist_gpu = to_backend_array(b_dist, nx, use_gpu=use_gpu)
+                
                 # Morphology dissimilarity (like gene expression cost M)
-                M_cell_morph = ot.dist(cells_A, cells_B, metric='euclidean')
+                M_cell_morph = ot.dist(cells_A_gpu, cells_B_gpu, metric='euclidean')
                 
                 # Intra-spot spatial structure (like D_A, D_B for spots)
-                D_cell_A = ot.dist(centroids_A, centroids_A, metric='euclidean')
-                D_cell_B = ot.dist(centroids_B, centroids_B, metric='euclidean')
+                D_cell_A = ot.dist(centroids_A_gpu, centroids_A_gpu, metric='euclidean')
+                D_cell_B = ot.dist(centroids_B_gpu, centroids_B_gpu, metric='euclidean')
                 
                 # Normalize spatial distances to make them comparable
-                if n_cells_A > 1 and np.min(D_cell_A[D_cell_A > 0]) > 0:
-                    D_cell_A = D_cell_A / np.min(D_cell_A[D_cell_A > 0])
-                if n_cells_B > 1 and np.min(D_cell_B[D_cell_B > 0]) > 0:
-                    D_cell_B = D_cell_B / np.min(D_cell_B[D_cell_B > 0])
+                if n_cells_A > 1:
+                    min_dist_A = nx.min(D_cell_A[D_cell_A > 0])
+                    if min_dist_A > 0:
+                        D_cell_A = D_cell_A / min_dist_A
+                if n_cells_B > 1:
+                    min_dist_B = nx.min(D_cell_B[D_cell_B > 0])
+                    if min_dist_B > 0:
+                        D_cell_B = D_cell_B / min_dist_B
                 
                 # Fused Gromov-Wasserstein for cells within this spot pair
                 # This preserves both morphology similarity and spatial arrangement
@@ -147,18 +159,27 @@ def compute_morphology_cost_matrix(
                         M_cell_morph,     # Morphology feature cost
                         D_cell_A,         # Spatial structure within spot i
                         D_cell_B,         # Spatial structure within spot j
-                        a_dist, b_dist,
+                        a_dist_gpu, b_dist_gpu,
                         loss_fun='square_loss',
                         alpha=alpha_cell_spatial,  # Balance features vs spatial
                         log=False
                     )
+                    # Convert result back to numpy for storage
+                    if hasattr(cost, 'item'):
+                        cost = cost.item()
+                    else:
+                        cost = float(nx.to_numpy(cost))
                     M_morph[i, j] = cost
                     valid_costs.append(cost)
                 except Exception as e:
                     # Fallback to simple EMD if FGW fails (e.g., single cell)
                     if verbose:
                         print(f"FGW failed for spot pair ({i},{j}), using EMD fallback: {e}")
-                    cost = ot.emd2(a_dist, b_dist, M_cell_morph)
+                    cost = ot.emd2(a_dist_gpu, b_dist_gpu, M_cell_morph)
+                    if hasattr(cost, 'item'):
+                        cost = cost.item()
+                    else:
+                        cost = float(nx.to_numpy(cost))
                     M_morph[i, j] = cost
                     valid_costs.append(cost)
             else:
