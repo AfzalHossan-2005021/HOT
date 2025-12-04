@@ -317,7 +317,7 @@ def _compute_on_gpu(gpu_id, spots_A_chunk, spots_B, morph_A, morph_B,
         # Load data for slice B (all spots) to this GPU
         gpu_data_B = {}
         for spot_key in spots_B:
-            morph_tensor = torch.from_numpy(morph_A[spot_key]).float().to(device)
+            morph_tensor = torch.from_numpy(morph_B[spot_key]).float().to(device)
             centroid_tensor = torch.from_numpy(centroid_B[spot_key]).float().to(device)
             n_cells = morph_B[spot_key].shape[0]
             dist_tensor = torch.from_numpy(np.ones(n_cells) / n_cells).float().to(device)
