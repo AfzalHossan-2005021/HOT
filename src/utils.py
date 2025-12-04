@@ -247,6 +247,9 @@ def _compute_multi_gpu(sliceA, sliceB, n_spots_A, n_spots_B, alpha_cell_spatial,
     import torch.multiprocessing as mp
     from multiprocessing import Manager
     
+    # Set spawn method for CUDA compatibility
+    mp.set_start_method('spawn', force=True)
+    
     # Get spots with cells
     morph_A = sliceA.uns['cell_morphology']
     morph_B = sliceB.uns['cell_morphology']
