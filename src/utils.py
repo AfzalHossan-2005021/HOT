@@ -92,6 +92,33 @@ def compute_morphology_cost_matrix(
     centroid_A = sliceA.uns['cell_centroids']
     centroid_B = sliceB.uns['cell_centroids']
     
+    # Pre-load all data to GPU for efficiency (avoid repeated CPU-GPU transfers)
+    print("  Pre-loading cell data to GPU...")
+    morph_A_gpu = {}
+    morph_B_gpu = {}
+    centroid_A_gpu = {}
+    centroid_B_gpu = {}
+    a_dist_gpu = {}
+    b_dist_gpu = {}
+    
+    for i in range(n_spots_A):
+        spot_key = str(i)
+        if spot_key in morph_A and len(morph_A[spot_key]) > 0:
+            morph_A_gpu[spot_key] = to_backend_array(morph_A[spot_key], nx, use_gpu=use_gpu)
+            centroid_A_gpu[spot_key] = to_backend_array(centroid_A[spot_key], nx, use_gpu=use_gpu)
+            n_cells = morph_A[spot_key].shape[0]
+            a_dist_gpu[spot_key] = to_backend_array(np.ones(n_cells) / n_cells, nx, use_gpu=use_gpu)
+    
+    for j in range(n_spots_B):
+        spot_key = str(j)
+        if spot_key in morph_B and len(morph_B[spot_key]) > 0:
+            morph_B_gpu[spot_key] = to_backend_array(morph_B[spot_key], nx, use_gpu=use_gpu)
+            centroid_B_gpu[spot_key] = to_backend_array(centroid_B[spot_key], nx, use_gpu=use_gpu)
+            n_cells = morph_B[spot_key].shape[0]
+            b_dist_gpu[spot_key] = to_backend_array(np.ones(n_cells) / n_cells, nx, use_gpu=use_gpu)
+    
+    print(f"  Loaded {len(morph_A_gpu)} spots from A and {len(morph_B_gpu)} spots from B to GPU")
+    
     # Initialize cost matrix
     M_morph = np.zeros((n_spots_A, n_spots_B))
     
@@ -102,38 +129,35 @@ def compute_morphology_cost_matrix(
     for i in tqdm(range(n_spots_A), desc="Computing cell-level FGW costs"):
         spot_key_A = str(i)
         
-        # Get cells for spot i in slice A
-        if spot_key_A in morph_A and len(morph_A[spot_key_A]) > 0:
-            cells_A = morph_A[spot_key_A]  # shape: (n_cells_i, 16)
-            centroids_A = centroid_A[spot_key_A]  # shape: (n_cells_i, 2)
-            n_cells_A = cells_A.shape[0]
-            a_dist = np.ones(n_cells_A) / n_cells_A  # uniform distribution
-        else:
-            cells_A = None
-            centroids_A = None
+        # Check if spot i has cells (data already on GPU)
+        if spot_key_A not in morph_A_gpu:
+            # No cells in spot A, all costs will be penalty
+            for j in range(n_spots_B):
+                M_morph[i, j] = -1
+            continue
+        
+        # Get pre-loaded GPU data for spot A
+        cells_A_gpu = morph_A_gpu[spot_key_A]
+        centroids_A_gpu = centroid_A_gpu[spot_key_A]
+        a_dist_gpu = a_dist_gpu[spot_key_A]
+        n_cells_A = cells_A_gpu.shape[0]
             
         for j in range(n_spots_B):
             spot_key_B = str(j)
             
-            # Get cells for spot j in slice B
-            if spot_key_B in morph_B and len(morph_B[spot_key_B]) > 0:
-                cells_B = morph_B[spot_key_B]  # shape: (n_cells_j, 16)
-                centroids_B = centroid_B[spot_key_B]  # shape: (n_cells_j, 2)
-                n_cells_B = cells_B.shape[0]
-                b_dist = np.ones(n_cells_B) / n_cells_B  # uniform distribution
-            else:
-                cells_B = None
-                centroids_B = None
+            # Check if spot j has cells (data already on GPU)
+            if spot_key_B not in morph_B_gpu:
+                M_morph[i, j] = -1
+                continue
             
-            # Compute OT cost if both spots have cells
-            if cells_A is not None and cells_B is not None:
-                # Convert to backend arrays for GPU acceleration
-                cells_A_gpu = to_backend_array(cells_A, nx, use_gpu=use_gpu)
-                cells_B_gpu = to_backend_array(cells_B, nx, use_gpu=use_gpu)
-                centroids_A_gpu = to_backend_array(centroids_A, nx, use_gpu=use_gpu)
-                centroids_B_gpu = to_backend_array(centroids_B, nx, use_gpu=use_gpu)
-                a_dist_gpu = to_backend_array(a_dist, nx, use_gpu=use_gpu)
-                b_dist_gpu = to_backend_array(b_dist, nx, use_gpu=use_gpu)
+            # Get pre-loaded GPU data for spot B
+            cells_B_gpu = morph_B_gpu[spot_key_B]
+            centroids_B_gpu = centroid_B_gpu[spot_key_B]
+            b_dist_gpu = b_dist_gpu[spot_key_B]
+            n_cells_B = cells_B_gpu.shape[0]
+            
+            # Compute OT cost (all data already on GPU - no transfers needed!)
+            if True:  # Always true since we checked for data existence above
                 
                 # Morphology dissimilarity (like gene expression cost M)
                 M_cell_morph = ot.dist(cells_A_gpu, cells_B_gpu, metric='euclidean')
