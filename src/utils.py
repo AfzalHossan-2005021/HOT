@@ -65,7 +65,7 @@ def compute_morphology_cost_matrix(
         sliceA: First slice with cell_morphology and cell_centroids in uns
         sliceB: Second slice with cell_morphology and cell_centroids in uns
         nx: POT backend (TorchBackend or NumpyBackend)
-        use_gpu: If True, uses GPU for computation
+        use_gpu: If True, uses GPU for computation (automatically detects and uses all available GPUs)
         alpha_cell_spatial: Weight for cell spatial structure (0=morphology only, 1=spatial only)
         verbose: If True, prints detailed progress information
         
@@ -75,23 +75,38 @@ def compute_morphology_cost_matrix(
     print("Computing cell-level Fused Gromov-Wasserstein cost matrix...")
     print(f"  alpha_cell_spatial = {alpha_cell_spatial:.2f} (morphology: {1-alpha_cell_spatial:.2f}, spatial: {alpha_cell_spatial:.2f})")
     
+    # Automatically detect available GPUs
+    if use_gpu and torch.cuda.is_available():
+        n_gpus = torch.cuda.device_count()
+        print(f"  Detected and using {n_gpus} GPU(s)")
+    else:
+        n_gpus = 1
+        print("  Using CPU only")
+    
     n_spots_A, n_spots_B = sliceA.shape[0], sliceB.shape[0]
     
-    # Load cell data to GPU
-    gpu_data_A = _preload_cell_data_to_gpu(sliceA.uns['cell_morphology'], 
-                                           sliceA.uns['cell_centroids'], 
-                                           n_spots_A, nx, use_gpu)
-    gpu_data_B = _preload_cell_data_to_gpu(sliceB.uns['cell_morphology'], 
-                                           sliceB.uns['cell_centroids'], 
-                                           n_spots_B, nx, use_gpu)
-    
-    print(f"  Loaded {len(gpu_data_A['morph'])} spots from A and {len(gpu_data_B['morph'])} spots from B to GPU")
-    
-    # Compute costs for spot pairs with cells
-    M_morph_gpu, valid_mask = _compute_spot_pair_costs(
-        gpu_data_A, gpu_data_B, n_spots_A, n_spots_B, 
-        alpha_cell_spatial, nx, use_gpu, verbose
-    )
+    # Multi-GPU mode
+    if n_gpus > 1 and use_gpu:
+        print(f"  Multi-GPU mode: distributing work across {n_gpus} GPUs")
+        M_morph_gpu, valid_mask = _compute_multi_gpu(
+            sliceA, sliceB, n_spots_A, n_spots_B,
+            alpha_cell_spatial, nx, n_gpus, verbose
+        )
+    else:
+        # Single GPU/CPU mode (original implementation)
+        gpu_data_A = _preload_cell_data_to_gpu(sliceA.uns['cell_morphology'], 
+                                               sliceA.uns['cell_centroids'], 
+                                               n_spots_A, nx, use_gpu, device_id=0)
+        gpu_data_B = _preload_cell_data_to_gpu(sliceB.uns['cell_morphology'], 
+                                               sliceB.uns['cell_centroids'], 
+                                               n_spots_B, nx, use_gpu, device_id=0)
+        
+        print(f"  Loaded {len(gpu_data_A['morph'])} spots from A and {len(gpu_data_B['morph'])} spots from B to GPU")
+        
+        M_morph_gpu, valid_mask = _compute_spot_pair_costs(
+            gpu_data_A, gpu_data_B, n_spots_A, n_spots_B, 
+            alpha_cell_spatial, nx, use_gpu, verbose, device_id=0
+        )
     
     # Convert to numpy and apply penalty for spots without cells
     M_morph = _finalize_cost_matrix(M_morph_gpu, valid_mask, n_spots_A, n_spots_B, nx, verbose)
@@ -102,9 +117,9 @@ def compute_morphology_cost_matrix(
     return M_morph
 
 
-def _preload_cell_data_to_gpu(morph_dict, centroid_dict, n_spots, nx, use_gpu):
+def _preload_cell_data_to_gpu(morph_dict, centroid_dict, n_spots, nx, use_gpu, device_id=0):
     """Pre-loads cell morphology and spatial data to GPU."""
-    print("  Pre-loading cell data to GPU...")
+    print(f"  Pre-loading cell data to GPU {device_id}...")
     
     gpu_data = {
         'morph': {},
@@ -118,21 +133,36 @@ def _preload_cell_data_to_gpu(morph_dict, centroid_dict, n_spots, nx, use_gpu):
         if spot_key not in morph_dict or len(morph_dict[spot_key]) == 0:
             continue
             
-        # Load morphology features
-        gpu_data['morph'][spot_key] = to_backend_array(morph_dict[spot_key], nx, use_gpu=use_gpu)
+        # Load morphology features to specific GPU
+        morph_tensor = morph_dict[spot_key]
+        if use_gpu and isinstance(nx, ot.backend.TorchBackend):
+            device = torch.device(f"cuda:{device_id}")
+            morph_tensor = torch.from_numpy(morph_tensor).float().to(device)
+        else:
+            morph_tensor = to_backend_array(morph_tensor, nx, use_gpu=False)
+        gpu_data['morph'][spot_key] = morph_tensor
         
         # Load and process centroids
-        centroids = to_backend_array(centroid_dict[spot_key], nx, use_gpu=use_gpu)
-        gpu_data['centroid'][spot_key] = centroids
+        centroid_tensor = centroid_dict[spot_key]
+        if use_gpu and isinstance(nx, ot.backend.TorchBackend):
+            centroid_tensor = torch.from_numpy(centroid_tensor).float().to(device)
+        else:
+            centroid_tensor = to_backend_array(centroid_tensor, nx, use_gpu=False)
+        gpu_data['centroid'][spot_key] = centroid_tensor
         
         # Create uniform distribution over cells
         n_cells = morph_dict[spot_key].shape[0]
-        gpu_data['dist'][spot_key] = to_backend_array(np.ones(n_cells) / n_cells, nx, use_gpu=use_gpu)
+        dist_tensor = np.ones(n_cells) / n_cells
+        if use_gpu and isinstance(nx, ot.backend.TorchBackend):
+            dist_tensor = torch.from_numpy(dist_tensor).float().to(device)
+        else:
+            dist_tensor = to_backend_array(dist_tensor, nx, use_gpu=False)
+        gpu_data['dist'][spot_key] = dist_tensor
         
         # Pre-compute normalized spatial distance matrix
-        D = ot.dist(centroids, centroids, metric='euclidean')
+        D = ot.dist(centroid_tensor, centroid_tensor, metric='euclidean')
         if n_cells > 1:
-            min_dist = nx.min(D[D > 0])
+            min_dist = torch.min(D[D > 0]) if use_gpu else nx.min(D[D > 0])
             if min_dist > 0:
                 D = D / min_dist
         gpu_data['D_spatial'][spot_key] = D
@@ -141,15 +171,20 @@ def _preload_cell_data_to_gpu(morph_dict, centroid_dict, n_spots, nx, use_gpu):
 
 
 def _compute_spot_pair_costs(gpu_data_A, gpu_data_B, n_spots_A, n_spots_B, 
-                             alpha_cell_spatial, nx, use_gpu, verbose):
+                             alpha_cell_spatial, nx, use_gpu, verbose, device_id=0):
     """Computes FGW costs for all spot pairs with cells."""
     spots_A = list(gpu_data_A['morph'].keys())
     spots_B = list(gpu_data_B['morph'].keys())
     n_valid_pairs = len(spots_A) * len(spots_B)
     
-    print(f"  Computing costs for {n_valid_pairs:,} spot pairs (only spots with cells)")
+    print(f"  Computing costs for {n_valid_pairs:,} spot pairs on GPU {device_id}")
     
-    M_morph_gpu = to_backend_array(np.zeros((n_spots_A, n_spots_B)), nx, use_gpu=use_gpu)
+    # Initialize cost matrix on specific GPU
+    if use_gpu and isinstance(nx, ot.backend.TorchBackend):
+        device = torch.device(f"cuda:{device_id}")
+        M_morph_gpu = torch.zeros((n_spots_A, n_spots_B), device=device, dtype=torch.float32)
+    else:
+        M_morph_gpu = to_backend_array(np.zeros((n_spots_A, n_spots_B)), nx, use_gpu=False)
     valid_mask = np.zeros((n_spots_A, n_spots_B), dtype=bool)
     
     for spot_key_A in tqdm(spots_A, desc="Computing cell-level FGW costs"):
@@ -205,6 +240,159 @@ def _finalize_cost_matrix(M_morph_gpu, valid_mask, n_spots_A, n_spots_B, nx, ver
         print(f"  Penalty value: {penalty:.4f}")
     
     return M_morph
+
+
+def _compute_multi_gpu(sliceA, sliceB, n_spots_A, n_spots_B, alpha_cell_spatial, nx, n_gpus, verbose):
+    """Distributes computation across multiple GPUs."""
+    import torch.multiprocessing as mp
+    from multiprocessing import Manager
+    
+    # Get spots with cells
+    morph_A = sliceA.uns['cell_morphology']
+    morph_B = sliceB.uns['cell_morphology']
+    centroid_A = sliceA.uns['cell_centroids']
+    centroid_B = sliceB.uns['cell_centroids']
+    
+    spots_A = [str(i) for i in range(n_spots_A) if str(i) in morph_A and len(morph_A[str(i)]) > 0]
+    spots_B = [str(i) for i in range(n_spots_B) if str(i) in morph_B and len(morph_B[str(i)]) > 0]
+    
+    n_spots_A_with_cells = len(spots_A)
+    print(f"  Distributing {n_spots_A_with_cells} spots from A across {n_gpus} GPUs")
+    
+    # Split spots A across GPUs
+    spots_per_gpu = n_spots_A_with_cells // n_gpus
+    spot_chunks = []
+    for gpu_id in range(n_gpus):
+        start_idx = gpu_id * spots_per_gpu
+        end_idx = start_idx + spots_per_gpu if gpu_id < n_gpus - 1 else n_spots_A_with_cells
+        spot_chunks.append(spots_A[start_idx:end_idx])
+        print(f"    GPU {gpu_id}: processing {len(spot_chunks[-1])} spots from A")
+    
+    # Shared memory for results
+    manager = Manager()
+    results_queue = manager.Queue()
+    
+    # Launch workers
+    processes = []
+    for gpu_id in range(n_gpus):
+        p = mp.Process(
+            target=_compute_on_gpu,
+            args=(gpu_id, spot_chunks[gpu_id], spots_B, morph_A, morph_B, 
+                  centroid_A, centroid_B, n_spots_A, n_spots_B, 
+                  alpha_cell_spatial, verbose, results_queue)
+        )
+        p.start()
+        processes.append(p)
+    
+    # Wait for all workers
+    for p in processes:
+        p.join()
+    
+    # Collect results
+    print("  Merging results from all GPUs...")
+    M_morph_gpu = torch.zeros((n_spots_A, n_spots_B), dtype=torch.float32)
+    valid_mask = np.zeros((n_spots_A, n_spots_B), dtype=bool)
+    
+    while not results_queue.empty():
+        result = results_queue.get()
+        for (i, j, cost) in result:
+            M_morph_gpu[i, j] = cost
+            valid_mask[i, j] = True
+    
+    return M_morph_gpu, valid_mask
+
+
+def _compute_on_gpu(gpu_id, spots_A_chunk, spots_B, morph_A, morph_B, 
+                   centroid_A, centroid_B, n_spots_A, n_spots_B,
+                   alpha_cell_spatial, verbose, results_queue):
+    """Worker function for single GPU computation."""
+    try:
+        # Set device
+        device = torch.device(f"cuda:{gpu_id}")
+        torch.cuda.set_device(device)
+        
+        # Load data for slice B (all spots) to this GPU
+        gpu_data_B = {}
+        for spot_key in spots_B:
+            morph_tensor = torch.from_numpy(morph_A[spot_key]).float().to(device)
+            centroid_tensor = torch.from_numpy(centroid_B[spot_key]).float().to(device)
+            n_cells = morph_B[spot_key].shape[0]
+            dist_tensor = torch.from_numpy(np.ones(n_cells) / n_cells).float().to(device)
+            
+            D = torch.cdist(centroid_tensor, centroid_tensor)
+            if n_cells > 1:
+                min_dist = torch.min(D[D > 0])
+                if min_dist > 0:
+                    D = D / min_dist
+            
+            gpu_data_B[spot_key] = {
+                'morph': morph_tensor,
+                'centroid': centroid_tensor,
+                'dist': dist_tensor,
+                'D_spatial': D
+            }
+        
+        # Process assigned spots from A
+        local_results = []
+        
+        for spot_key_A in tqdm(spots_A_chunk, desc=f"GPU {gpu_id}", position=gpu_id, leave=False):
+            i = int(spot_key_A)
+            
+            # Load spot A data to this GPU
+            cells_A = torch.from_numpy(morph_A[spot_key_A]).float().to(device)
+            centroids_A = torch.from_numpy(centroid_A[spot_key_A]).float().to(device)
+            n_cells_A = morph_A[spot_key_A].shape[0]
+            dist_A = torch.from_numpy(np.ones(n_cells_A) / n_cells_A).float().to(device)
+            
+            D_A = torch.cdist(centroids_A, centroids_A)
+            if n_cells_A > 1:
+                min_dist_A = torch.min(D_A[D_A > 0])
+                if min_dist_A > 0:
+                    D_A = D_A / min_dist_A
+            
+            for spot_key_B in spots_B:
+                j = int(spot_key_B)
+                
+                cells_B = gpu_data_B[spot_key_B]['morph']
+                dist_B = gpu_data_B[spot_key_B]['dist']
+                D_B = gpu_data_B[spot_key_B]['D_spatial']
+                
+                # Compute morphology dissimilarity
+                M_cell_morph = torch.cdist(cells_A, cells_B)
+                
+                # Compute FGW cost
+                try:
+                    cost = ot.gromov.fused_gromov_wasserstein2(
+                        M_cell_morph.cpu().numpy(),
+                        D_A.cpu().numpy(),
+                        D_B.cpu().numpy(),
+                        dist_A.cpu().numpy(),
+                        dist_B.cpu().numpy(),
+                        loss_fun='square_loss',
+                        alpha=alpha_cell_spatial,
+                        log=False
+                    )
+                    local_results.append((i, j, float(cost)))
+                except Exception as e:
+                    if verbose:
+                        print(f"GPU {gpu_id}: FGW failed for spot pair ({i},{j}), using EMD: {e}")
+                    cost = ot.emd2(
+                        dist_A.cpu().numpy(),
+                        dist_B.cpu().numpy(),
+                        M_cell_morph.cpu().numpy()
+                    )
+                    local_results.append((i, j, float(cost)))
+        
+        # Send results back
+        results_queue.put(local_results)
+        
+        # Cleanup
+        torch.cuda.empty_cache()
+        
+    except Exception as e:
+        print(f"Error in GPU {gpu_id}: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def paste_pairwise_align_modified(
