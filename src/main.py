@@ -15,6 +15,7 @@ def main():
     print("sample_right: ", config['sample_right'])
     print('alpha: ', config['alpha'])
     print('lambda: ', config['lambda_sinkhorn'])
+    print('beta_morphology: ', config['beta_morphology'])
     print('-' * 40)
 
     mode = config['mode']

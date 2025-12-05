@@ -29,6 +29,7 @@ class AnalyzeOutput:
         self.config_file_name = os.path.basename(self.config['config_path'])
         self.dissimilarity = config['dissimilarity']
         self.lambda_sinkhorn = config['lambda_sinkhorn']
+        self.beta_morphology = config['beta_morphology']
         self.sinkhorn = config['sinkhorn']
         self.numInnerIterMax = config['numInnerIterMax']
         self.grid_search = config['grid_search']
@@ -212,6 +213,7 @@ class AnalyzeOutput:
         pi = paste_pairwise_align_modified(
             adata_0, adata_1,
             alpha=self.alpha, G_init=None, numItermax=10000,
+            beta_morphology=self.beta_morphology,
             dissimilarity=self.dissimilarity, sinkhorn=self.sinkhorn,
             cost_mat_path=cost_mat_path, verbose=False, norm=True,
             backend=backend, use_gpu=use_gpu,

@@ -23,6 +23,7 @@ class PairwiseAlign():
         self.config_file_name = os.path.basename(config['config_path'])
         self.sinkhorn = config['sinkhorn']
         self.lambda_sinkhorn = config['lambda_sinkhorn']
+        self.beta_morphology = config['beta_morphology']
         self.cost_mat_path = f'{self.results_path}/../local_data/{self.dataset}/{self.sample_left}/cost_mat_{self.sample_left}_{self.sample_right}_{self.dissimilarity}.npy'
         os.makedirs(os.path.dirname(self.cost_mat_path), exist_ok=True)
 
@@ -73,6 +74,7 @@ class PairwiseAlign():
             self.adata_left, self.adata_right,
             alpha=self.alpha, sinkhorn=self.sinkhorn,
             lambda_sinkhorn=self.lambda_sinkhorn,
+            beta_morphology=self.beta_morphology,
             dissimilarity=self.dissimilarity, G_init=pi_init,
             numItermax=10000, cost_mat_path=self.cost_mat_path,
             return_obj=True, norm=True, verbose=False,
