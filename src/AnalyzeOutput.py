@@ -45,7 +45,16 @@ class AnalyzeOutput:
             self.adata_right = dataset_map[self.sample_right]
                 
         config['cost_mat'] = np.load(config['cost_mat_path'])
-        self.cost_mat = config['cost_mat']
+        config['morphology_cost'] = np.load(config['morphology_cost_path'])
+        self.cost_mat_gene = config['cost_mat']
+        self.cost_mat_morphology = config['morphology_cost']
+        
+        # Combine cost matrices using beta_morphology (same as alignment)
+        self.cost_mat = self._combine_cost_matrices(
+            self.cost_mat_gene, 
+            self.cost_mat_morphology, 
+            self.beta_morphology
+        )
 
         scale_coords(self.adata_left, key_name='spatial')
         scale_coords(self.adata_right, key_name='spatial')
@@ -58,6 +67,28 @@ class AnalyzeOutput:
         self.ax_hist_rs.set_xlabel('Remodeling score')
         self.ax_hist_rs.set_ylabel('Count')
 
+    def _combine_cost_matrices(self, M_gene, M_morph, beta_morphology):
+        """Combines gene expression and morphology cost matrices using beta_morphology weight.
+        
+        Uses same normalization and combination as paste_pairwise_align_modified.
+        """
+        # Normalize both cost matrices to [0, 1] range for fair combination
+        M_gene_min = np.min(M_gene)
+        M_gene_max = np.max(M_gene)
+        M_gene_normalized = (M_gene - M_gene_min) / (M_gene_max - M_gene_min + 1e-10)
+        
+        M_morph_min = np.min(M_morph)
+        M_morph_max = np.max(M_morph)
+        M_morph_normalized = (M_morph - M_morph_min) / (M_morph_max - M_morph_min + 1e-10)
+        
+        # Combine: M_combined = (1-beta) * M_gene + beta * M_morph
+        M_combined = (1 - beta_morphology) * M_gene_normalized + beta_morphology * M_morph_normalized
+        
+        print(f"Combined cost matrix using beta_morphology={beta_morphology:.2f}")
+        print(f"  Gene expression weight: {1 - beta_morphology:.2f}")
+        print(f"  Cell morphology weight: {beta_morphology:.2f}")
+        
+        return M_combined
 
     def visualize_goodness_of_mapping(self, slice_pos='right', invert_x=False):
         if slice_pos == 'left': 
@@ -203,8 +234,14 @@ class AnalyzeOutput:
             cost_mat_path = f'{self.results_path}/../local_data/{self.dataset}/{self.sample_left}/cost_mat_{self.sample_left}_0_{self.sample_left}_1_{self.dissimilarity}.npy'
         else:
             cost_mat_path = f'{self.results_path}/../local_data/{self.dataset}/{self.sample_left}/cost_mat_Sham_1_Sham_2_{self.dissimilarity}.npy'
+
+        if adata_right is None:
+            morphology_cost_path = f'{self.results_path}/../local_data/{self.dataset}/{self.sample_left}/morphology_cost_{self.sample_left}_0_{self.sample_left}_1_{self.dissimilarity}.npy'
+        else:
+            morphology_cost_path = f'{self.results_path}/../local_data/{self.dataset}/{self.sample_left}/morphology_cost_Sham_1_Sham_2_{self.dissimilarity}.npy'
         
         os.makedirs(os.path.dirname(cost_mat_path), exist_ok=True)
+        os.makedirs(os.path.dirname(morphology_cost_path), exist_ok=True)
         plt.switch_backend('agg')
 
         if not self.sinkhorn:
@@ -216,11 +253,16 @@ class AnalyzeOutput:
             beta_morphology=self.beta_morphology,
             dissimilarity=self.dissimilarity, sinkhorn=self.sinkhorn,
             cost_mat_path=cost_mat_path, verbose=False, norm=True,
+            morphology_cost_path=morphology_cost_path,
             backend=backend, use_gpu=use_gpu,
             numItermaxEmd=self.numIterMaxEmd
         )
 
-        cost_mat = np.load(cost_mat_path)
+        # Load both cost matrices and combine (same as alignment)
+        cost_mat_gene = np.load(cost_mat_path)
+        cost_mat_morph = np.load(morphology_cost_path)
+        cost_mat = self._combine_cost_matrices(cost_mat_gene, cost_mat_morph, self.beta_morphology)
+
 
         distances_left, weights_left = compute_null_distribution(pi, cost_mat, 'left')
         print('\ndistances_left', distances_left.min(), distances_left.max())

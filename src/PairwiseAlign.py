@@ -25,7 +25,9 @@ class PairwiseAlign():
         self.lambda_sinkhorn = config['lambda_sinkhorn']
         self.beta_morphology = config['beta_morphology']
         self.cost_mat_path = f'{self.results_path}/../local_data/{self.dataset}/{self.sample_left}/cost_mat_{self.sample_left}_{self.sample_right}_{self.dissimilarity}.npy'
+        self.morphology_cost_path = f'{self.results_path}/../local_data/{self.dataset}/{self.sample_left}/morphology_cost_{self.sample_left}_{self.sample_right}_{self.dissimilarity}.npy'
         os.makedirs(os.path.dirname(self.cost_mat_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.morphology_cost_path), exist_ok=True)
 
         if config['adata_left_path'] != 'None':
             self.adata_left = sc.read(config['adata_left_path'])
@@ -63,6 +65,7 @@ class PairwiseAlign():
         print("Calculating pi using gcg")
 
         self.config['cost_mat_path'] = self.cost_mat_path
+        self.config['morphology_cost_path'] = self.morphology_cost_path
 
         if self.lambda_sinkhorn == 'inf':
             pi = np.ones((self.adata_left.n_obs, self.adata_right.n_obs)) / (self.adata_left.n_obs * self.adata_right.n_obs)
@@ -77,6 +80,7 @@ class PairwiseAlign():
             beta_morphology=self.beta_morphology,
             dissimilarity=self.dissimilarity, G_init=pi_init,
             numItermax=10000, cost_mat_path=self.cost_mat_path,
+            morphology_cost_path=self.morphology_cost_path,
             return_obj=True, norm=True, verbose=False,
             backend=backend, use_gpu=self.use_gpu,
             numInnerItermax=self.numInnerIterMax, method='sinkhorn_log'

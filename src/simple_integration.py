@@ -10,9 +10,9 @@ from scipy.spatial import cKDTree
 
 # Paths
 data_dir = r'c:\Users\afzal\OneDrive\Desktop\HOT\Data\John_Roger'
-h5ad_path = os.path.join(data_dir, 'healthy.h5ad')
-csv_path = os.path.join(data_dir, 'healthy.csv')
-output_path = os.path.join(data_dir, 'healthy_integrated_simple.h5ad')
+h5ad_path = os.path.join(data_dir, 'pod.h5ad')
+csv_path = os.path.join(data_dir, 'pod.csv')
+output_path = os.path.join(data_dir, 'pod_m.h5ad')
 
 # Load data
 print("Loading data...")
