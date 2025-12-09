@@ -30,6 +30,7 @@ class AnalyzeOutput:
         self.dissimilarity = config['dissimilarity']
         self.lambda_sinkhorn = config['lambda_sinkhorn']
         self.beta_morphology = config['beta_morphology']
+        self.alpha_cell_spatial = config.get('alpha_cell_spatial', 0.3)  # Default to 0.3 for backward compatibility
         self.sinkhorn = config['sinkhorn']
         self.numInnerIterMax = config['numInnerIterMax']
         self.grid_search = config['grid_search']
@@ -251,6 +252,7 @@ class AnalyzeOutput:
             adata_0, adata_1,
             alpha=self.alpha, G_init=None, numItermax=10000,
             beta_morphology=self.beta_morphology,
+            alpha_cell_spatial=self.alpha_cell_spatial,
             dissimilarity=self.dissimilarity, sinkhorn=self.sinkhorn,
             cost_mat_path=cost_mat_path, verbose=False, norm=True,
             morphology_cost_path=morphology_cost_path,

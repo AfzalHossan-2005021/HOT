@@ -24,6 +24,7 @@ class PairwiseAlign():
         self.sinkhorn = config['sinkhorn']
         self.lambda_sinkhorn = config['lambda_sinkhorn']
         self.beta_morphology = config['beta_morphology']
+        self.alpha_cell_spatial = config.get('alpha_cell_spatial', 0.3)  # Default to 0.3 for backward compatibility
         self.cost_mat_path = f'{self.results_path}/../local_data/{self.dataset}/{self.sample_left}/cost_mat_{self.sample_left}_{self.sample_right}_{self.dissimilarity}.npy'
         self.morphology_cost_path = f'{self.results_path}/../local_data/{self.dataset}/{self.sample_left}/morphology_cost_{self.sample_left}_{self.sample_right}_{self.dissimilarity}.npy'
         os.makedirs(os.path.dirname(self.cost_mat_path), exist_ok=True)
@@ -78,6 +79,7 @@ class PairwiseAlign():
             alpha=self.alpha, sinkhorn=self.sinkhorn,
             lambda_sinkhorn=self.lambda_sinkhorn,
             beta_morphology=self.beta_morphology,
+            alpha_cell_spatial=self.alpha_cell_spatial,
             dissimilarity=self.dissimilarity, G_init=pi_init,
             numItermax=10000, cost_mat_path=self.cost_mat_path,
             morphology_cost_path=self.morphology_cost_path,

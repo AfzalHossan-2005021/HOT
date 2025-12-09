@@ -16,6 +16,7 @@ def main():
     print('alpha: ', config['alpha'])
     print('lambda: ', config['lambda_sinkhorn'])
     print('beta_morphology: ', config['beta_morphology'])
+    print('alpha_cell_spatial: ', config.get('alpha_cell_spatial', 0.3))
     print('-' * 40)
 
     mode = config['mode']
