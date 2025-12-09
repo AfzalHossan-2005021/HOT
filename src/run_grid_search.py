@@ -23,10 +23,10 @@ parser.add_argument('-qc', '--QC', default=0)
 
 args = parser.parse_args()
 
-alphas = [0.0001, 0.001, 0.01, 0.1]
-lambda_sinkhorns = [0.001, 0.01, 0.1]
-beta_morphology = [0.0, 0.25, 0.5, 0.75, 1.0]
-alpha_cell_spatial_values = [0.1, 0.3, 0.5]  # Cell-level spatial vs morphology weight
+alphas = [0.2]
+lambda_sinkhorns = [0.005]
+beta_morphology = [1.0]
+alpha_cell_spatial_values = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5]  # Cell-level spatial vs morphology weight
 
 for alpha in alphas:
     for lambda_sinkhorn in lambda_sinkhorns:
