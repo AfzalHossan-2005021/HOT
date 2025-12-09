@@ -10,7 +10,7 @@ from typing import List, Tuple, Optional
 from scipy.spatial.transform import Rotation as R
 
 
-def to_backend_array(x: object, nx: ot.backend.Backend, dtype: object = "float32", use_gpu: bool = True) -> object:
+def to_backend_array(x: object, nx: ot.backend.Backend, dtype: object = "float64", use_gpu: bool = True) -> object:
     """
     Convert input `x` into the POT backend format (NumPy, Torch, JAX, etc.),
     while handling device placement and dtype.
